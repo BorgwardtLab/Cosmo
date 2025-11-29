@@ -4,7 +4,7 @@
 
 This repository contains the Cosmo neural network lift and convolution layers. For a usage example and reproduction of the results of the RECOMB 2026 submission "Gaining mechanistic insight from geometric deep learning on molecule structures through equivariant convolution", see https://github.com/BorgwardtLab/RECOMB2026Cosmo.
 
-Installation: `pip install cosmic-torch` or `pip install git+https://github.com/BorgwardtLab/Cosmo`
+Installation: `pip install cosmic-torch` or `pip install git+https://github.com/BorgwardtLab/Cosmo`. Make sure to before install [torch](https://pytorch.org/get-started/locally/) and [torch-scatter](https://pypi.org/project/torch-scatter/) according to their instructions.
 
 ### Cosmo
 

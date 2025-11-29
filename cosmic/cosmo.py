@@ -1,7 +1,6 @@
 import torch
 from torch import nn
-
-from .utilities import scatter_mean, scatter_softmax, scatter_sum
+from torch_scatter import scatter_mean, scatter_softmax, scatter_sum
 
 """
 Cosmo can be implemented with various filter functions. The underlying principle is always to compute the filter under transformation of a local reference frame (hood_coords) which is derived from neighboring input points. The forward signature of the layer is always the same and inputs can be obtained from a Lift2D or Lift3D module.
@@ -41,7 +40,7 @@ class KernelPointCosmo(nn.Module):
         w = self.w[:, nn_idx]  # use closest kernel point
         f = features[source]
         out_channels = torch.einsum("ni,oni->no", f, w)  # m x out
-        features = scatter_sum(out_channels, target, m)
+        features = scatter_sum(out_channels, target, dim_size=m, dim=0)
         return features  # Updated features of shape (m, out_channels)
 
 
@@ -94,7 +93,7 @@ class NeuralFieldCosmo(nn.Module):
         )
         f = features[source]
         out_channels = torch.einsum("ni,noi->no", f, w)  # m x out
-        features = scatter_mean(out_channels, target, m)
+        features = scatter_mean(out_channels, target, dim_size=m, dim=0)
         return features  # Updated features of shape (m, out_channels)
 
 
@@ -136,6 +135,6 @@ class PointTransformerCosmo(nn.Module):
         w1 = self.w1(features)
         w2 = self.w2(features)
         w3 = self.w3(features)
-        a = scatter_softmax(w1[target] - w2[source] + d, target, m)
-        features = scatter_sum(a * (w3[source] + d), target, m)
+        a = scatter_softmax(w1[target] - w2[source] + d, target, dim_size=m, dim=0)
+        features = scatter_sum(a * (w3[source] + d), target, dim_size=m, dim=0)
         return features  # Updated features of shape (m, out_channels)

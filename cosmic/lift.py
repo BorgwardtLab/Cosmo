@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import torch
+from torch_scatter import scatter_max, scatter_mean, scatter_softmax, scatter_sum
 
 from .utilities import *
 
@@ -123,12 +124,12 @@ class Lower:
 
     def __call__(self, features, index, size, return_index=False):
         if self.agg == "sum":
-            return scatter_sum(features, index, size)
+            return scatter_sum(features, index, dim_size=size, dim=0)
         elif self.agg == "mean":
-            return scatter_mean(features, index, size)
+            return scatter_mean(features, index, dim_size=size, dim=0)
         elif self.agg == "max":
-            result = scatter_max(features, index, size)
+            result = scatter_max(features, index, dim_size=size, dim=0)
             return result[0] if not return_index else result
         elif self.agg == "softmax":
-            a = scatter_softmax(features, index, size)
-            return scatter_sum(a * features, index, size)
+            a = scatter_softmax(features, index, dim_size=size, dim=0)
+            return scatter_sum(a * features, index, dim_size=size, dim=0)
