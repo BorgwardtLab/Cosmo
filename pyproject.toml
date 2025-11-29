@@ -13,7 +13,6 @@ authors = [
 ]
 dependencies = [
   "torch>=2.5",
-  "torch_scatter>=2.1",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -30,4 +29,9 @@ Issues = "https://github.com/BorgwardtLab/Cosmo/issues"
 include = ["cosmic", "cosmic.*"]
 
 [tool.setuptools_scm]
+
+[project.optional-dependencies]
+scatter = [
+  "torch_scatter>=2.1",
+]
 
