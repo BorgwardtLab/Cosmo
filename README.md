@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="assets/logo.png" width="100"/>
+    <img src="https://raw.githubusercontent.com/BorgwardtLab/Cosmo/main/assets/logo.png" width="100"/>
 </p>
 
 This repository contains the Cosmo neural network lift and convolution layers. For a usage example and reproduction of the results of the RECOMB 2026 submission "Gaining mechanistic insight from geometric deep learning on molecule structures through equivariant convolution", see https://github.com/BorgwardtLab/RECOMB2026Cosmo.
