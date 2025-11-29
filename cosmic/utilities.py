@@ -131,3 +131,64 @@ def filter_bases(bases, minimum_angle, coords, triangles):
         valid = angles_deg >= minimum_angle
         bases[~valid] = torch.nan
     return bases
+
+
+def scatter_sum(src, index, size):
+    assert index.dtype == torch.long
+    assert index.shape[0] == src.shape[0]
+    out_shape = (size,) + src.shape[1:]
+    out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
+    out.index_add_(0, index, src)
+    return out
+
+
+def scatter_mean(src, index, size):
+    sum_out = scatter_sum(src, index, size)
+    count = scatter_sum(torch.ones_like(src), index, size)
+    return sum_out / count.clamp_min(1)
+
+
+def scatter_max(src, index, size):
+    assert src.is_floating_point() and index.dtype == torch.long
+    N = src.size(0)
+    idx_exp = index.view(N, *([1] * (src.ndim - 1))).expand_as(src)
+    vals = torch.full(
+        (size,) + src.shape[1:],
+        torch.finfo(src.dtype).min,
+        dtype=src.dtype,
+        device=src.device,
+    )
+    vals.scatter_reduce_(0, idx_exp, src, reduce="amax")
+    pos = (
+        torch.arange(N, device=src.device)
+        .view(N, *([1] * (src.ndim - 1)))
+        .expand_as(src)
+    )
+    pos_mask = torch.where(src == vals[index], pos, torch.full_like(pos, N))
+    argmax = torch.full_like(vals, N, dtype=torch.long)
+    argmax.scatter_reduce_(0, idx_exp, pos_mask, reduce="amin")
+    argmax[argmax == N] = -1
+    count = torch.zeros_like(vals, dtype=torch.long)
+    count.scatter_reduce_(
+        0, idx_exp, torch.ones_like(src, dtype=torch.long), reduce="sum"
+    )
+    vals[count == 0] = 0
+    return vals, argmax
+
+
+def scatter_softmax(src, index, size, eps=1e-12):
+    assert src.is_floating_point()
+    assert index.dtype == torch.long
+    N = src.shape[0]
+    idx_exp = index.view(N, *([1] * (src.ndim - 1))).expand_as(src)
+    max_vals = torch.full(
+        (size,) + src.shape[1:],
+        torch.finfo(src.dtype).min,
+        dtype=src.dtype,
+        device=src.device,
+    )
+    max_vals.scatter_reduce_(0, idx_exp, src, reduce="amax")
+    ex = (src - max_vals[index]).exp()
+    sum_per_group = torch.zeros_like(max_vals)
+    sum_per_group.scatter_reduce_(0, idx_exp, ex, reduce="sum")
+    return ex / sum_per_group[index].clamp_min(eps)

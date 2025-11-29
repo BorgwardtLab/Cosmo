@@ -30,8 +30,3 @@ include = ["cosmic", "cosmic.*"]
 
 [tool.setuptools_scm]
 
-[project.optional-dependencies]
-scatter = [
-  "torch_scatter>=2.1",
-]
-

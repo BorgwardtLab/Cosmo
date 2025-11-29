@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from torch_scatter import scatter_add, scatter_mean, scatter_softmax
+
+from .utilities import scatter_add, scatter_mean, scatter_softmax
 
 """
 Cosmo can be implemented with various filter functions. The underlying principle is always to compute the filter under transformation of a local reference frame (hood_coords) which is derived from neighboring input points. The forward signature of the layer is always the same and inputs can be obtained from a Lift2D or Lift3D module.
