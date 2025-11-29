@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
   "torch>=2.5",
+  "torch_scatter>=2.1"
 ]
 classifiers = [
   "Programming Language :: Python :: 3",

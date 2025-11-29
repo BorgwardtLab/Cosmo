@@ -1,14 +1,24 @@
 from types import SimpleNamespace
 
 import torch
+from torch_scatter import scatter_max, scatter_mean, scatter_softmax, scatter_sum
 
 from .utilities import *
 
 
 class Lift2D:
+    """
+    Parameter-free module to lift a 2D geometric graph. Given node features, global coordinates, and a graph adjacency matrix it computes the lifted adjacency and coordinates of neighborhoods in the local reference frame of the edges, together with some helper variables. These build the input to a Cosmo layer.
+    """
 
     @torch.compiler.disable
-    def __call__(self, node_features, coords, edge_index, node2inst):
+    def __call__(
+        self,
+        node_features,  # Node features of shape (n, in_channels)
+        coords,  # Global coordinates of shape (n, 2)
+        edge_index,  # Edge index of shape (2, m)
+        node2inst,  # Node-to-instance mapping of shape (n,)
+    ):
         n = coords.shape[0]
         adj = (
             torch.sparse_coo_tensor(
@@ -32,26 +42,36 @@ class Lift2D:
         edge2inst = node2inst[edge2node]
         edge_features = node_features[edge2node]
         return SimpleNamespace(
-            adj=adj,
-            ij=ij,
-            jk=jk,
-            coords=coords,
-            hood_coords=hood_coords,
-            edge_features=edge_features,
-            bases=bases,
-            i=i,
-            j=j,
-            edges=edges,
-            node2inst=node2inst,
-            edge2node=edge2node,
-            edge2inst=edge2inst,
+            adj=adj,  # Sorted adjacency matrix of shape (n, n)
+            source=ij,  # Lifted source edges (m,)
+            target=jk,  # Lifted target edges (m,)
+            coords=coords,  # Global coordinates of shape (n, 2)
+            hood_coords=hood_coords,  # Local coordinates of shape (m, 2)
+            features=edge_features,  # Edge features of shape (m, in_channels)
+            bases=bases,  # Bases of shape (m, 2, 2)
+            i=i,  # Node indices i (m,)
+            j=j,  # Node indices j (m,)
+            edges=edges,  # Tuples of i,j (m, 2)
+            node2inst=node2inst,  # Node-to-instance mapping of shape (n,)
+            lifted2node=edge2node,  # Edge-to-node mapping of shape (m,)
+            lifted2inst=edge2inst,  # Edge-to-instance mapping of shape (m,)
         )
 
 
 class Lift3D:
+    """
+    Parameter-free module to lift a 3D geometric graph. Given node features, global coordinates, and a graph adjacency matrix it computes the lifted adjacency and coordinates of neighborhoods in the local reference frame of the triangles, together with some helper variables. These build the input to a Cosmo layer.
+    """
 
     @torch.compiler.disable
-    def __call__(self, node_features, coords, edge_index, node2inst, minimum_angle=0.0):
+    def __call__(
+        self,
+        node_features,  # Node features of shape (n, in_channels)
+        coords,  # Global coordinates of shape (n, 3)
+        edge_index,  # Edge index of shape (2, m)
+        node2inst,  # Node-to-instance mapping of shape (n,)
+        minimum_angle=0.0,  # Minimum angle to filter nearly colinear triangles (default: 0.0)
+    ):
         n = coords.shape[0]
         adj = (
             torch.sparse_coo_tensor(
@@ -76,18 +96,43 @@ class Lift3D:
         tri2inst = node2inst[tri2node]
         tri_features = node_features[tri2node]
         return SimpleNamespace(
-            adj=adj,
-            ijk=ijk,
-            jkl=jkl,
-            coords=coords,
-            hood_coords=hood_coords,
-            tri_features=tri_features,
-            bases=bases,
-            i=i,
-            j=j,
-            triangles=triangles,
-            node2inst=node2inst,
-            tri2node=tri2node,
-            tri2edge=tri2edge,
-            tri2inst=tri2inst,
+            adj=adj,  # Sorted adjacency matrix of shape (n, n)
+            source=ijk,  # Lifted source triangles (m,)
+            target=jkl,  # Lifted target triangles (m,)
+            coords=coords,  # Global coordinates of shape (n, 3)
+            hood_coords=hood_coords,  # Local coordinates of shape (m, 3)
+            features=tri_features,  # Triangle features of shape (m, in_channels)
+            bases=bases,  # Bases of shape (m, 3, 3)
+            i=i,  # Node indices i (m,)
+            j=j,  # Node indices j (m,)
+            triangles=triangles,  # Tuples of i,j,k (m, 3)
+            node2inst=node2inst,  # Node-to-instance mapping of shape (n,)
+            lifted2node=tri2node,  # Triangle-to-node mapping of shape (m,)
+            lifted2edge=tri2edge,  # Triangle-to-edge mapping of shape (m,)
+            lifted2inst=tri2inst,  # Triangle-to-instance mapping of shape (m,)
         )
+
+
+class Lower:
+    """
+    Parameter-free module to lower a lifted geometric graph back to the input graph. Given edge/triangle features and the corresponding index it aggregates the features to the input graph.
+    """
+
+    def __init__(self, agg="mean"):
+        assert agg in ["sum", "mean", "max", "softmax"]
+        self.agg = agg
+
+    def __call__(self, features, index, size, return_index=False):
+        if self.agg == "sum":
+            return scatter_sum(features, index, dim_size=size, dim=0)
+        elif self.agg == "mean":
+            return scatter_mean(features, index, dim_size=size, dim=0)
+        elif self.agg == "max":
+            val, idx = scatter_max(features, index, dim_size=size, dim=0)
+            if return_index:
+                return val, idx
+            else:
+                return val
+        elif self.agg == "softmax":
+            a = scatter_softmax(features, index, dim_size=size, dim=0)
+            return scatter_sum(a * features, index, dim_size=size, dim=0)

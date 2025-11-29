@@ -6,8 +6,8 @@ import torch.nn.functional as F
 
 def compute_bases(coords, a, b, c=None):
     """
-    Computes transformation matrices for change of basis along an edge.
-    The new basis will be centered at the start-node of the edge, and rotated such that the end-node is at 0 degrees.
+    Computes transformation matrices for change of basis along an edge or triangle.
+    The new basis will be centered at the start-node of the edge or triangle, and rotated such that the end-node is at 0 degrees.
     """
     if c is None:  # 2D
         edge_vectors = coords[b] - coords[a]
@@ -41,13 +41,11 @@ def compute_bases(coords, a, b, c=None):
 
 def compute_edge_index(adj):
     """
-    Computes edge tuples for computing on the group.
-    Nodes are named i->j->k, where j is the center node, i is a neighbor node, and k is the querying node.
-    Neighbors i will later be centered around j and rotated to the j->k edge (using the bases above).
-    ij and jk are indices of edges in the graph (a,b).
-    ij indexes all edges that end in j (b==j), for all j.
-    jk enumerates all edges j->k, repeated for all neighbors i that connect to j (b==j).
-    ij,jk returns a flattened list of all possible i->j->k edges.
+    Computes edge pairs for the lifted graph in 2D. Essentially, this function computes the line graph of G given by the adjacency matrix `adj`.
+    Nodes are named i->j->k, where j is the center node, i is a neighbor node, i->j is the incoming message edge (source) and j->k is the aggregating query edge (target).
+    Neighbors i will later be centered on j and rotated to the j->k edge (using the bases above).
+    Return values (a, b) denote the edge index of the original graph, and (ij, jk) denote the edge index of the lifted graph.
+    The lifted edge index (ij, jk) describes the i->j->k message passing connections between edges and determine how messages are aggregated in the Cosmo layer.
     """
 
     a, b = adj.indices()
@@ -68,6 +66,14 @@ def compute_edge_index(adj):
 
 
 def compute_hyperedge_index(adj):
+    """
+    Computes triangle pairs for the lifted graph in 3D. Essentially, this function computes the line graph of the line graph of G given by the adjacency matrix `adj`.
+    Nodes are named i->j->k->l, where j is the center node, i is a neighbor node, i->j->k is the incoming message triangle (source) and j->k->l is the aggregating query triangle (target).
+    Neighbors i will later be centered on j and rotated to the j->k->l triangle (using the bases above).
+    Return values (a, b) denote the edge index of the original graph, and (ij, jk) denote the edge index of the 2D lifted graph, and (ijk, jkl) denote the edge index of the 3D lifted graph.
+    The lifted hyperedge index (ijk, jkl) describes the i->j->k->l message passing connections between triangles and determine how messages are aggregated in the Cosmo layer.
+    """
+    # first part is identical to the 2D case and computes the line graph of G
     a, b = adj.indices()
     n = adj.size()[0]
     mask = a != b  # remove self-loops
@@ -82,25 +88,24 @@ def compute_hyperedge_index(adj):
     jk = torch.index_select(_adj, 0, b).coalesce().values()
     mask = a[ij] != b[jk]  # remove backlinks (= no valid triangle)
     ij, jk = ij[mask], jk[mask]
+
+    # second part follows the same logic and computes the line graph of the line graph of G
     hyperedge_index = torch.arange(ij.shape[0]).to(adj.device)
     n = len(edge_index)
     _adj = torch.sparse_coo_tensor(
         indices=torch.stack([ij, jk]), size=(n, n), values=hyperedge_index
     )
-    # degrees = torch.unique(ij, return_counts=True)[1]
     index, degrees = torch.unique_consecutive(ij, return_counts=True)
     degrees = torch.zeros(n).type_as(degrees).index_put_((index,), degrees)
     ijk = hyperedge_index.repeat_interleave(degrees[jk])
     jkl = torch.index_select(_adj, 0, jk).coalesce().values()
-    # mask = a[ij[ijk]] != b[jk[ijk]]  # remove backlinks
-    # ijk, jkl = ijk[mask], jkl[mask]
     return a, b, ij, jk, ijk, jkl
 
 
 def transform_coords(coords, bases, i, j, basis_index):
     """
-    Applies the according base transformation to the coordinates.
-    Each neighbor i of center node j will be transformed with base j->k->l.
+    Applies base transformations to input coordinates to map them to the local reference frame of the query edge or triangle.
+    Each neighbor i of center node j will be transformed with base j->k or j->k->l given by `base_index`.
     """
     centered_coords = coords[i] - coords[j]
     hood_coords = torch.bmm(bases[basis_index], centered_coords.unsqueeze(-1)).squeeze(
@@ -110,6 +115,9 @@ def transform_coords(coords, bases, i, j, basis_index):
 
 
 def filter_bases(bases, minimum_angle, coords, triangles):
+    """
+    Filters bases (triangles) that are formed by (nearly) colinear triplets of nodes.
+    """
     if minimum_angle and minimum_angle > 0:
         x, y, z = triangles.T
         u = coords[y] - coords[x]
@@ -123,73 +131,3 @@ def filter_bases(bases, minimum_angle, coords, triangles):
         valid = angles_deg >= minimum_angle
         bases[~valid] = torch.nan
     return bases
-
-
-def scatter_sum(src, index, dim=-1, out=None, dim_size=None):
-    assert index.dtype == torch.long
-    dim = dim if dim >= 0 else src.dim() + dim
-    assert index.shape == src.shape
-
-    if out is None:
-        out_shape = list(src.shape)
-        if dim_size is not None:
-            out_shape[dim] = dim_size
-        else:
-            assert index.numel() > 0 or src.numel() == 0
-            out_shape[dim] = 0 if index.numel() == 0 else int(index.max().item()) + 1
-        out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
-
-    if index.numel() > 0:
-        assert int(index.min().item()) >= 0
-        assert int(index.max().item()) < out.size(dim)
-    return out.scatter_add(dim, index, src)
-
-
-def scatter_mean(src, index, dim=-1, out=None, dim_size=None):
-    sum_out = scatter_sum(src, index, dim=dim, out=out, dim_size=dim_size)
-
-    # Count of values per index for division
-    count_dtype = sum_out.dtype if sum_out.is_floating_point() else torch.float32
-    ones = torch.ones_like(src, dtype=count_dtype, device=src.device)
-    count_out = scatter_sum(ones, index, dim=dim, out=None, dim_size=sum_out.size(dim))
-
-    denom = count_out.clamp_min(1)
-    sum_out = sum_out / denom
-    return sum_out
-
-
-def scatter_softmax(src, index, dim=-1, eps=1e-12):
-    assert src.is_floating_point()
-    assert index.dtype == torch.long
-    dim = dim if dim >= 0 else src.dim() + dim
-    assert index.shape == src.shape
-
-    # Determine reduced (group) shape
-    out_size_dim = 0 if index.numel() == 0 else int(index.max().item()) + 1
-    out_shape = list(src.shape)
-    out_shape[dim] = out_size_dim
-
-    if out_size_dim == 0:
-        return torch.zeros_like(src)
-
-    # Compute per-group max for numerical stability (simple loop)
-    finfo = torch.finfo(src.dtype)
-    neg_inf = finfo.min
-    group_max = torch.full(out_shape, neg_inf, dtype=src.dtype, device=src.device)
-    assert hasattr(torch.Tensor, "scatter_reduce_")
-    group_max.scatter_reduce_(dim, index, src, reduce="amax", include_self=True)
-
-    # Subtract gathered group max
-    max_gather = group_max.gather(dim, index)
-    shifted = src - max_gather
-
-    exp_shifted = torch.exp(shifted)
-
-    # Sum of exponentials per group
-    sum_exp = torch.zeros(out_shape, dtype=src.dtype, device=src.device).scatter_add(
-        dim, index, exp_shifted
-    )
-    denom = sum_exp.gather(dim, index).clamp_min(eps)
-
-    out = exp_shifted / denom
-    return out
