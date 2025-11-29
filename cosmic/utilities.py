@@ -123,3 +123,73 @@ def filter_bases(bases, minimum_angle, coords, triangles):
         valid = angles_deg >= minimum_angle
         bases[~valid] = torch.nan
     return bases
+
+
+def scatter_sum(src, index, dim=-1, out=None, dim_size=None):
+    assert index.dtype == torch.long
+    dim = dim if dim >= 0 else src.dim() + dim
+    assert index.shape == src.shape
+
+    if out is None:
+        out_shape = list(src.shape)
+        if dim_size is not None:
+            out_shape[dim] = dim_size
+        else:
+            assert index.numel() > 0 or src.numel() == 0
+            out_shape[dim] = 0 if index.numel() == 0 else int(index.max().item()) + 1
+        out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
+
+    if index.numel() > 0:
+        assert int(index.min().item()) >= 0
+        assert int(index.max().item()) < out.size(dim)
+    return out.scatter_add(dim, index, src)
+
+
+def scatter_mean(src, index, dim=-1, out=None, dim_size=None):
+    sum_out = scatter_sum(src, index, dim=dim, out=out, dim_size=dim_size)
+
+    # Count of values per index for division
+    count_dtype = sum_out.dtype if sum_out.is_floating_point() else torch.float32
+    ones = torch.ones_like(src, dtype=count_dtype, device=src.device)
+    count_out = scatter_sum(ones, index, dim=dim, out=None, dim_size=sum_out.size(dim))
+
+    denom = count_out.clamp_min(1)
+    sum_out = sum_out / denom
+    return sum_out
+
+
+def scatter_softmax(src, index, dim=-1, eps=1e-12):
+    assert src.is_floating_point()
+    assert index.dtype == torch.long
+    dim = dim if dim >= 0 else src.dim() + dim
+    assert index.shape == src.shape
+
+    # Determine reduced (group) shape
+    out_size_dim = 0 if index.numel() == 0 else int(index.max().item()) + 1
+    out_shape = list(src.shape)
+    out_shape[dim] = out_size_dim
+
+    if out_size_dim == 0:
+        return torch.zeros_like(src)
+
+    # Compute per-group max for numerical stability (simple loop)
+    finfo = torch.finfo(src.dtype)
+    neg_inf = finfo.min
+    group_max = torch.full(out_shape, neg_inf, dtype=src.dtype, device=src.device)
+    assert hasattr(torch.Tensor, "scatter_reduce_")
+    group_max.scatter_reduce_(dim, index, src, reduce="amax", include_self=True)
+
+    # Subtract gathered group max
+    max_gather = group_max.gather(dim, index)
+    shifted = src - max_gather
+
+    exp_shifted = torch.exp(shifted)
+
+    # Sum of exponentials per group
+    sum_exp = torch.zeros(out_shape, dtype=src.dtype, device=src.device).scatter_add(
+        dim, index, exp_shifted
+    )
+    denom = sum_exp.gather(dim, index).clamp_min(eps)
+
+    out = exp_shifted / denom
+    return out

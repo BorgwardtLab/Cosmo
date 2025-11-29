@@ -1,7 +1,7 @@
 import torch
 from torch import nn
-from torch_scatter import scatter_add, scatter_mean
-from torch_scatter.composite import scatter_softmax
+
+from .utilities import scatter_add, scatter_mean, scatter_softmax
 
 
 class KernelPointCosmo(nn.Module):
