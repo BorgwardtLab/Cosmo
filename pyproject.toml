@@ -12,7 +12,7 @@ authors = [
   { name = "Tim Kucera", email = "kucera@biochem.mpg.de" },
 ]
 dependencies = [
-  "torch>=2.5",
+
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
