@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.24.0", "hatch-vcs>=0.4"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61", "wheel", "setuptools_scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmic-torch"
@@ -26,9 +26,8 @@ Homepage = "https://github.com/BorgwardtLab/Cosmo"
 Repository = "https://github.com/BorgwardtLab/Cosmo"
 Issues = "https://github.com/BorgwardtLab/Cosmo/issues"
 
-[tool.hatch.build.targets.wheel]
-packages = ["cosmic"]
+[tool.setuptools.packages.find]
+include = ["cosmic", "cosmic.*"]
 
-[tool.hatch.version]
-source = "vcs"
+[tool.setuptools_scm]
 
