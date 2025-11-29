@@ -14,7 +14,9 @@ Cosmo is a neural network architecture based on message passing on geometric gra
 
 Cosmo layers operate on lifted geometric graphs. These are computed from an adjacency matrix of the data, either given by e.g. atomic bond connectivity, or constructed by e.g. k-NN:
 
-```adj = torch_geometric.nn.knn_graph(coords, k, batch_index)```
+```
+adj = torch_geometric.nn.knn_graph(coords, k, batch_index)
+```
 
 where `coords` are the input point coordinates of the data, `k` is a hyperparameter, and `batch_index` assigns each node to an instance in the batch (compare the computing principles of [PyG](https://pytorch-geometric.readthedocs.io/en/2.4.0/index.html), which we highly recommend to use).
 
