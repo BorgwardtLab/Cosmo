@@ -20,16 +20,8 @@ class Lift2D:
         node2inst,  # Node-to-instance mapping of shape (n,)
     ):
         n = coords.shape[0]
-        adj = (
-            torch.sparse_coo_tensor(
-                indices=edge_index,
-                size=(n, n),
-                values=torch.ones_like(edge_index[0]),
-            )
-            .coalesce()
-            .to(edge_index.device)
-        )
-        a, b, ij, jk = compute_edge_index(adj)
+        src, dst = coalesce_edges(edge_index[0], edge_index[1])
+        a, b, ij, jk = compute_edge_index(src, dst, n)
         bases = compute_bases(coords, a, b)
         i, j = a[ij], b[ij]
         hood_coords = transform_coords(coords, bases, i, j, jk)
@@ -42,7 +34,6 @@ class Lift2D:
         edge2inst = node2inst[edge2node]
         edge_features = node_features[edge2node]
         return SimpleNamespace(
-            adj=adj,  # Sorted adjacency matrix of shape (n, n)
             source=ij,  # Lifted source edges (m,)
             target=jk,  # Lifted target edges (m,)
             coords=coords,  # Global coordinates of shape (n, 2)
@@ -73,14 +64,8 @@ class Lift3D:
         minimum_angle=0.0,  # Minimum angle to filter nearly colinear triangles (default: 0.0)
     ):
         n = coords.shape[0]
-        adj = (
-            torch.sparse_coo_tensor(
-                indices=edge_index, size=(n, n), values=torch.ones_like(edge_index[0])
-            )
-            .coalesce()
-            .to(edge_index.device)
-        )
-        a, b, ij, jk, ijk, jkl = compute_hyperedge_index(adj)
+        src, dst = coalesce_edges(edge_index[0], edge_index[1])
+        a, b, ij, jk, ijk, jkl = compute_hyperedge_index(src, dst, n)
         x, y, z = a[ij], b[ij], b[jk]
         triangles = torch.stack([x, y, z], dim=1)
         bases = compute_bases(coords, x, y, z)
@@ -96,7 +81,6 @@ class Lift3D:
         tri2inst = node2inst[tri2node]
         tri_features = node_features[tri2node]
         return SimpleNamespace(
-            adj=adj,  # Sorted adjacency matrix of shape (n, n)
             source=ijk,  # Lifted source triangles (m,)
             target=jkl,  # Lifted target triangles (m,)
             coords=coords,  # Global coordinates of shape (n, 3)

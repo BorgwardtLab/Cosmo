@@ -39,66 +39,121 @@ def compute_bases(coords, a, b, c=None):
     return bases
 
 
-def compute_edge_index(adj):
+def _lexsort2(primary, secondary):
+    """Stable permutation that sorts by ``primary``, then ``secondary``."""
+    idx = torch.argsort(secondary, stable=True)
+    return idx[torch.argsort(primary[idx], stable=True)]
+
+
+def coalesce_edges(src, dst):
+    """Unique directed edges, sorted like a coalesced sparse COO index."""
+    src = src.long()
+    dst = dst.long()
+    if src.numel() == 0:
+        return src, dst
+    perm = _lexsort2(src, dst)
+    src, dst = src[perm], dst[perm]
+    dup = torch.zeros(src.shape[0], dtype=torch.bool, device=src.device)
+    dup[1:] = (src[1:] == src[:-1]) & (dst[1:] == dst[:-1])
+    keep = ~dup
+    return src[keep], dst[keep]
+
+
+def _index_select_rows(row, col, values, query, num_rows):
+    """Dense stand-in for ``index_select(coo, 0, query).coalesce().values()``.
+
+    Avoids CUDA sparse tensors, whose destructors segfault on process exit.
+    ``(row, col)`` pairs must be unique; values are gathered in coalesced order.
+    Returns ``(parent, gathered)`` where ``parent[k]`` is the query index that
+    produced ``gathered[k]``.
     """
-    Computes edge pairs for the lifted graph in 2D. Essentially, this function computes the line graph of G given by the adjacency matrix `adj`.
+    device = row.device
+    query = query.long()
+    if row.numel() == 0 or query.numel() == 0:
+        empty = row.new_empty(0, dtype=torch.long)
+        return empty, values.new_empty(0).long() if values.dtype != torch.long else empty
+    perm = _lexsort2(row.long(), col.long())
+    row_s = row.long()[perm]
+    val_s = values.long()[perm]
+    counts = torch.bincount(row_s, minlength=num_rows)
+    ptr = row.new_zeros(num_rows + 1, dtype=torch.long)
+    ptr[1:] = torch.cumsum(counts, dim=0)
+    deg = counts[query]
+    parent = torch.repeat_interleave(
+        torch.arange(query.shape[0], device=device, dtype=torch.long), deg
+    )
+    if parent.numel() == 0:
+        empty = row.new_empty(0, dtype=torch.long)
+        return empty, empty
+    block = torch.cumsum(deg, dim=0) - deg
+    inner = torch.arange(parent.shape[0], device=device, dtype=torch.long) - block[parent]
+    gathered = val_s[ptr[query][parent] + inner]
+    return parent, gathered
+
+
+def index_select_columns(row, col, query, num_cols):
+    """Dense stand-in for ``index_select(coo, 1, query).coalesce().indices()``.
+
+    ``query`` may contain duplicates (as ``scatter_max`` winners often do).
+    Returns ``(src, dst)`` where ``dst`` is the index into ``query``.
+    """
+    device = row.device
+    row = row.long()
+    col = col.long()
+    query = query.long()
+    if row.numel() == 0 or query.numel() == 0:
+        empty = row.new_empty(0, dtype=torch.long)
+        return empty, empty
+    perm = _lexsort2(col, row)
+    col_s = col[perm]
+    row_s = row[perm]
+    counts = torch.bincount(col_s, minlength=num_cols)
+    ptr = row.new_zeros(num_cols + 1, dtype=torch.long)
+    ptr[1:] = torch.cumsum(counts, dim=0)
+    deg = counts[query]
+    dst = torch.repeat_interleave(
+        torch.arange(query.shape[0], device=device, dtype=torch.long), deg
+    )
+    if dst.numel() == 0:
+        empty = row.new_empty(0, dtype=torch.long)
+        return empty, empty
+    block = torch.cumsum(deg, dim=0) - deg
+    inner = torch.arange(dst.shape[0], device=device, dtype=torch.long) - block[dst]
+    src = row_s[ptr[query][dst] + inner]
+    order = _lexsort2(src, dst)
+    return src[order], dst[order]
+
+
+def compute_edge_index(src, dst, num_nodes):
+    """
+    Computes edge pairs for the lifted graph in 2D. Essentially, this function computes the line graph of G given by directed edges ``(src, dst)``.
     Nodes are named i->j->k, where j is the center node, i is a neighbor node, i->j is the incoming message edge (source) and j->k is the aggregating query edge (target).
     Neighbors i will later be centered on j and rotated to the j->k edge (using the bases above).
     Return values (a, b) denote the edge index of the original graph, and (ij, jk) denote the edge index of the lifted graph.
     The lifted edge index (ij, jk) describes the i->j->k message passing connections between edges and determine how messages are aggregated in the Cosmo layer.
     """
-
-    a, b = adj.indices()
-    n = adj.size()[0]
-    mask = a != b  # remove self-loops
+    a, b = src.long(), dst.long()
+    mask = a != b
     a, b = a[mask], b[mask]
-    edge_index = torch.arange(a.shape[0]).to(adj.device)
-    _adj = torch.sparse_coo_tensor(
-        indices=torch.stack([a, b]), size=adj.size(), values=edge_index
-    )
-    index, degrees = torch.unique_consecutive(a, return_counts=True)
-    degrees = torch.zeros(n).type_as(degrees).index_put_((index,), degrees)
-    ij = edge_index.repeat_interleave(degrees[b])
-    jk = torch.index_select(_adj, 0, b).coalesce().values()
-    # mask = a[ij] != b[jk]  # remove backlinks
-    # ij, jk = ij[mask], jk[mask]
+    edge_ids = torch.arange(a.shape[0], device=a.device, dtype=torch.long)
+    ij, jk = _index_select_rows(a, b, edge_ids, b, num_nodes)
     return a, b, ij, jk
 
 
-def compute_hyperedge_index(adj):
+def compute_hyperedge_index(src, dst, num_nodes):
     """
-    Computes triangle pairs for the lifted graph in 3D. Essentially, this function computes the line graph of the line graph of G given by the adjacency matrix `adj`.
+    Computes triangle pairs for the lifted graph in 3D. Essentially, this function computes the line graph of the line graph of G given by directed edges ``(src, dst)``.
     Nodes are named i->j->k->l, where j is the center node, i is a neighbor node, i->j->k is the incoming message triangle (source) and j->k->l is the aggregating query triangle (target).
     Neighbors i will later be centered on j and rotated to the j->k->l triangle (using the bases above).
     Return values (a, b) denote the edge index of the original graph, and (ij, jk) denote the edge index of the 2D lifted graph, and (ijk, jkl) denote the edge index of the 3D lifted graph.
     The lifted hyperedge index (ijk, jkl) describes the i->j->k->l message passing connections between triangles and determine how messages are aggregated in the Cosmo layer.
     """
-    # first part is identical to the 2D case and computes the line graph of G
-    a, b = adj.indices()
-    n = adj.size()[0]
-    mask = a != b  # remove self-loops
-    a, b = a[mask], b[mask]
-    edge_index = torch.arange(a.shape[0]).to(adj.device)
-    _adj = torch.sparse_coo_tensor(
-        indices=torch.stack([a, b]), size=(n, n), values=edge_index
-    )
-    index, degrees = torch.unique_consecutive(a, return_counts=True)
-    degrees = torch.zeros(n).type_as(degrees).index_put_((index,), degrees)
-    ij = edge_index.repeat_interleave(degrees[b])
-    jk = torch.index_select(_adj, 0, b).coalesce().values()
-    mask = a[ij] != b[jk]  # remove backlinks (= no valid triangle)
+    a, b, ij, jk = compute_edge_index(src, dst, num_nodes)
+    mask = a[ij] != b[jk]
     ij, jk = ij[mask], jk[mask]
-
-    # second part follows the same logic and computes the line graph of the line graph of G
-    hyperedge_index = torch.arange(ij.shape[0]).to(adj.device)
-    n = len(edge_index)
-    _adj = torch.sparse_coo_tensor(
-        indices=torch.stack([ij, jk]), size=(n, n), values=hyperedge_index
-    )
-    index, degrees = torch.unique_consecutive(ij, return_counts=True)
-    degrees = torch.zeros(n).type_as(degrees).index_put_((index,), degrees)
-    ijk = hyperedge_index.repeat_interleave(degrees[jk])
-    jkl = torch.index_select(_adj, 0, jk).coalesce().values()
+    hyperedge_ids = torch.arange(ij.shape[0], device=a.device, dtype=torch.long)
+    num_edges = a.shape[0]
+    ijk, jkl = _index_select_rows(ij, jk, hyperedge_ids, jk, num_edges)
     return a, b, ij, jk, ijk, jkl
 
 
