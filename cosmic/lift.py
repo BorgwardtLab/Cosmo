@@ -65,6 +65,7 @@ class Lift3D:
     ):
         n = coords.shape[0]
         src, dst = coalesce_edges(edge_index[0], edge_index[1])
+        num_edges = int(src.shape[0])
         a, b, ij, jk, ijk, jkl = compute_hyperedge_index(src, dst, n)
         x, y, z = a[ij], b[ij], b[jk]
         triangles = torch.stack([x, y, z], dim=1)
@@ -94,6 +95,9 @@ class Lift3D:
             lifted2node=tri2node,  # Triangle-to-node mapping of shape (m,)
             lifted2edge=tri2edge,  # Triangle-to-edge mapping of shape (m,)
             lifted2inst=tri2inst,  # Triangle-to-instance mapping of shape (m,)
+            num_edges=num_edges,  # Coalesced directed edges in the input graph
+            edge_src=src,  # Coalesced edge sources (num_edges,)
+            edge_dst=dst,  # Coalesced edge targets (num_edges,)
         )
 
 
@@ -105,6 +109,24 @@ class Lower:
     def __init__(self, agg="mean"):
         assert agg in ["sum", "mean", "max", "softmax"]
         self.agg = agg
+
+    def pool_triangles(self, features, index, size, return_index=False):
+        """Aggregate lifted triangle (or 2D edge) features onto an index map."""
+        return self(features, index, size, return_index=return_index)
+
+    def pool_to_nodes(self, features, lift, num_nodes):
+        return self.pool_triangles(features, lift.lifted2node, num_nodes)
+
+    def pool_to_edges(self, features, lift):
+        """Pool onto coalesced input-graph edges (``lift.lifted2edge``)."""
+        size = int(getattr(lift, "num_edges", 0))
+        if size <= 0:
+            width = features.shape[-1] if features.numel() else 0
+            return features.new_zeros(0, width)
+        return self.pool_triangles(features, lift.lifted2edge, size)
+
+    def pool_to_graph(self, features, lift, num_inst):
+        return self.pool_triangles(features, lift.lifted2inst, num_inst)
 
     def __call__(self, features, index, size, return_index=False):
         if self.agg == "sum":
